@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "WhatsApp",
+    "description": "Menghubungkan akun WhatsApp lewat sidecar whatsmeow native dan menjadikan tiap chat sebagai Session DSH tersendiri.",
+    "detail": "docs/DETAIL.md"
+  }
+}

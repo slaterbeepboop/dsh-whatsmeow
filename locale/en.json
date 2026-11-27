@@ -1,0 +1,7 @@
+{
+  "meta": {
+    "title": "WhatsApp",
+    "description": "Links your WhatsApp account through a native whatsmeow sidecar and turns each chat into its own DSH Session.",
+    "detail": "docs/DETAIL.md"
+  }
+}

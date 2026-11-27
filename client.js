@@ -141,7 +141,17 @@ window.__ModuleLoader__.load({
               style: styles.button,
               disabled: busy,
               onClick: () => void act('logout'),
-            }, busy ? 'Working…' : 'Unlink')),
+            }, busy ? 'Working…' : 'Unlink'),
+          // Reloads the bridge process, which is what picks up a rebuilt
+          // sidecar binary without restarting DSH.
+          snapshot.process !== 'running'
+            ? h('button', {
+              type: 'button',
+              style: styles.button,
+              disabled: busy,
+              onClick: () => void act('restart'),
+            }, busy ? 'Working…' : 'Restart bridge')
+            : null),
         snapshot.error ? h('p', { style: styles.error }, snapshot.error) : null,
         actionError ? h('p', { style: styles.error }, actionError) : null)
     }

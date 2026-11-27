@@ -264,7 +264,11 @@ export function apply(ctx, config = {}) {
     child.stderr.setEncoding('utf8')
     child.stderr.on('data', () => {})
 
-    child.on('exit', (code) => {
+    const ownChild = child
+    ownChild.on('exit', (code) => {
+      // A restart replaces the process before the old one exits; its teardown
+      // must not overwrite the state the replacement already reported.
+      if (child !== ownChild) return
       state.process = code === 0 ? 'stopped' : 'failed'
       state.state = 'stopped'
       state.qr = null
@@ -279,12 +283,24 @@ export function apply(ctx, config = {}) {
 
   function stop() {
     if (!child) return
+    const exiting = child
+    child = null
     try {
-      child.stdin.end()
+      exiting.stdin.end()
     } catch {
       // The pipe is already gone; the exit handler still clears the state.
     }
-    child = null
+  }
+
+  /** Replace the sidecar process without restarting DSH. */
+  async function restart() {
+    stop()
+    // Give the old process a moment to release the SQLite database.
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    state.error = null
+    state.state = 'stopped'
+    state.qr = null
+    await start()
   }
 
   ctx.effect(() => {
@@ -362,11 +378,16 @@ export function apply(ctx, config = {}) {
         sendJson(res, 400, { ok: false, error: 'body must be JSON' })
         return
       }
-      if (action !== 'login' && action !== 'logout') {
-        sendJson(res, 400, { ok: false, error: 'action must be login or logout' })
+      if (action !== 'login' && action !== 'logout' && action !== 'restart') {
+        sendJson(res, 400, { ok: false, error: 'action must be login, logout or restart' })
         return
       }
       try {
+        if (action === 'restart') {
+          await restart()
+          sendJson(res, 200, { ok: true })
+          return
+        }
         if (action === 'logout') {
           // Drop the chat mapping too: the next pairing starts from a clean slate.
           chatToSession.clear()
@@ -374,6 +395,8 @@ export function apply(ctx, config = {}) {
           state.chats.length = 0
         }
         await request({ cmd: action }, 30_000)
+        // A pairing attempt supersedes whatever went wrong before it.
+        state.error = null
         sendJson(res, 200, { ok: true })
       } catch (error) {
         sendJson(res, 500, {

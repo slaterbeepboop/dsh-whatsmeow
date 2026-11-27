@@ -98,11 +98,26 @@ type sidecar struct {
 	out *writer
 	log waLog.Logger
 
-	mu     sync.Mutex
-	client *whatsmeow.Client
-	device *store.Device
-	state  string
-	qrStop context.CancelFunc
+	mu        sync.Mutex
+	client    *whatsmeow.Client
+	device    *store.Device
+	container *sqlstore.Container
+	state     string
+	qrStop    context.CancelFunc
+}
+
+// cli reads the current client under the lock: a logout rebuilds it, and a
+// caller holding the old pointer would drive a device already deleted.
+func (s *sidecar) cli() *whatsmeow.Client {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.client
+}
+
+func (s *sidecar) deviceOf() *store.Device {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.device
 }
 
 func main() {
@@ -146,7 +161,7 @@ func main() {
 
 	// A stored device means a previous pairing survived, so reconnect without
 	// asking for a QR code again.
-	if s.device.ID != nil {
+	if s.deviceOf().ID != nil {
 		s.connectExisting(ctx)
 	} else {
 		s.setState("logged_out", "", "")
@@ -155,7 +170,9 @@ func main() {
 	go s.readLoop(ctx)
 	<-ctx.Done()
 	s.stopQR()
-	s.client.Disconnect()
+	if client := s.cli(); client != nil {
+		client.Disconnect()
+	}
 }
 
 // fatal reports an unrecoverable startup failure and exits non-zero so the
@@ -179,19 +196,53 @@ func (s *sidecar) open(ctx context.Context, path string) error {
 	if err := container.Upgrade(ctx); err != nil {
 		return fmt.Errorf("upgrade database: %w", err)
 	}
+	s.mu.Lock()
+	s.container = container
+	s.mu.Unlock()
+	return s.resetClient(ctx)
+}
+
+// resetClient builds a client around whatever device the database now holds.
+// After a logout the stored device is gone, so this is what makes a fresh QR
+// pairing possible again instead of retrying a device the server ended.
+func (s *sidecar) resetClient(ctx context.Context) error {
+	s.mu.Lock()
+	container := s.container
+	s.mu.Unlock()
+	if container == nil {
+		return errors.New("database is not open")
+	}
 	device, err := container.GetFirstDevice(ctx)
 	if err != nil {
 		return fmt.Errorf("load device: %w", err)
 	}
+	client := whatsmeow.NewClient(device, s.log)
+	client.AddEventHandler(s.handleEvent)
+	s.mu.Lock()
 	s.device = device
-	s.client = whatsmeow.NewClient(device, s.log)
-	s.client.AddEventHandler(s.handleEvent)
+	s.client = client
+	s.mu.Unlock()
 	return nil
 }
 
+// dropDevice clears credentials the server has rejected and rebuilds the
+// client, so the next login offers a QR code rather than failing on a deleted
+// device.
+func (s *sidecar) dropDevice() {
+	ctx := context.Background()
+	if device := s.deviceOf(); device != nil {
+		if err := device.Delete(ctx); err != nil {
+			s.emitError(fmt.Errorf("clear logged-out device: %w", err))
+		}
+	}
+	if err := s.resetClient(ctx); err != nil {
+		s.emitError(err)
+	}
+}
+
 func (s *sidecar) close() {
-	if s.client != nil {
-		s.client.Disconnect()
+	if client := s.cli(); client != nil {
+		client.Disconnect()
 	}
 }
 
@@ -209,12 +260,10 @@ func (s *sidecar) setState(state, jid, reason string) {
 }
 
 func (s *sidecar) pushName() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.device == nil {
-		return ""
+	if device := s.deviceOf(); device != nil {
+		return device.PushName
 	}
-	return s.device.PushName
+	return ""
 }
 
 func (s *sidecar) currentState() string {
@@ -232,16 +281,18 @@ func (s *sidecar) emitError(err error) {
 // so a restart during a network blip heals itself instead of stranding the
 // account on "disconnected" until the next restart.
 func (s *sidecar) connectExisting(ctx context.Context) {
-	// Startup already connected, and a repeated login must not dial a second
-	// socket: whatsmeow rejects that with ErrAlreadyConnected.
-	if s.client.IsConnected() {
+	client := s.cli()
+	if client == nil {
 		return
 	}
-	s.mu.Lock()
-	s.client.InitialAutoReconnect = true
-	s.mu.Unlock()
+	// Startup already connected, and a repeated login must not dial a second
+	// socket: whatsmeow rejects that with ErrAlreadyConnected.
+	if client.IsConnected() {
+		return
+	}
+	client.InitialAutoReconnect = true
 	s.setState("connecting", "", "")
-	if err := s.client.ConnectContext(ctx); err != nil {
+	if err := client.ConnectContext(ctx); err != nil {
 		s.emitError(fmt.Errorf("reconnect: %w", err))
 		s.setState("disconnected", s.ownJID(), err.Error())
 	}
@@ -274,28 +325,34 @@ func (s *sidecar) readLoop(ctx context.Context) {
 	}
 	// stdin closed: the host plugin exited.
 	s.stopQR()
-	s.client.Disconnect()
+	if client := s.cli(); client != nil {
+		client.Disconnect()
+	}
 }
 
 func (s *sidecar) handle(ctx context.Context, req request) {
 	switch req.Cmd {
 	case "status":
+		loggedIn, connected := false, false
+		if client := s.cli(); client != nil {
+			loggedIn, connected = client.IsLoggedIn(), client.IsConnected()
+		}
 		s.out.send(response{ID: req.ID, OK: true, Data: map[string]any{
 			"state":     s.currentState(),
 			"jid":       s.ownJID(),
 			"pushName":  s.pushName(),
-			"loggedIn":  s.client.IsLoggedIn(),
-			"connected": s.client.IsConnected(),
+			"loggedIn":  loggedIn,
+			"connected": connected,
 		}})
 
 	case "login":
-		if s.client.IsLoggedIn() {
+		if client := s.cli(); client != nil && client.IsLoggedIn() {
 			s.out.send(response{ID: req.ID, OK: true, Data: map[string]any{"state": "connected"}})
 			return
 		}
 		// A paired device already holds the credentials, so asking for a QR code
 		// again would be wrong: reconnect and let the status events report it.
-		if s.device.ID != nil {
+		if s.deviceOf().ID != nil {
 			go s.connectExisting(ctx)
 			s.out.send(response{ID: req.ID, OK: true, Data: map[string]any{"state": "connecting"}})
 			return
@@ -308,21 +365,21 @@ func (s *sidecar) handle(ctx context.Context, req request) {
 
 	case "logout":
 		s.stopQR()
-		if err := s.client.Logout(ctx); err != nil && !errors.Is(err, whatsmeow.ErrNotLoggedIn) {
-			// A failed network logout still leaves the local session unusable,
-			// so delete it anyway and report the reason.
-			s.emitError(fmt.Errorf("logout: %w", err))
+		if client := s.cli(); client != nil {
+			if err := client.Logout(ctx); err != nil && !errors.Is(err, whatsmeow.ErrNotLoggedIn) {
+				// A failed network logout still leaves the local session
+				// unusable, so clear it anyway and report the reason.
+				s.emitError(fmt.Errorf("logout: %w", err))
+			}
+			client.Disconnect()
 		}
-		s.client.Disconnect()
-		if err := s.device.Delete(ctx); err != nil {
-			s.out.send(response{ID: req.ID, OK: false, Error: err.Error()})
-			return
-		}
+		s.dropDevice()
 		s.setState("logged_out", "", "")
 		s.out.send(response{ID: req.ID, OK: true})
 
 	case "send":
-		if !s.client.IsLoggedIn() {
+		client := s.cli()
+		if client == nil || !client.IsLoggedIn() {
 			s.out.send(response{ID: req.ID, OK: false, Error: "not logged in"})
 			return
 		}
@@ -331,7 +388,7 @@ func (s *sidecar) handle(ctx context.Context, req request) {
 			s.out.send(response{ID: req.ID, OK: false, Error: "invalid jid: " + err.Error()})
 			return
 		}
-		resp, err := s.client.SendMessage(ctx, jid, &waE2E.Message{
+		resp, err := client.SendMessage(ctx, jid, &waE2E.Message{
 			Conversation: proto.String(req.Text),
 		})
 		if err != nil {
@@ -343,7 +400,9 @@ func (s *sidecar) handle(ctx context.Context, req request) {
 	case "shutdown":
 		s.out.send(response{ID: req.ID, OK: true})
 		s.stopQR()
-		s.client.Disconnect()
+		if client := s.cli(); client != nil {
+			client.Disconnect()
+		}
 		os.Exit(0)
 
 	default:
@@ -359,13 +418,17 @@ func (s *sidecar) handle(ctx context.Context, req request) {
 // channel's own context would tear the socket down the instant pairing
 // succeeds, and the phone would report that the login failed.
 func (s *sidecar) startQR(ctx context.Context) error {
-	if s.client.IsConnected() {
-		s.client.Disconnect()
+	client := s.cli()
+	if client == nil {
+		return errors.New("client is not available")
+	}
+	if client.IsConnected() {
+		client.Disconnect()
 		// The QR channel requires a socket that is not already connected.
 		time.Sleep(100 * time.Millisecond)
 	}
 	qrCtx, cancel := context.WithCancel(ctx)
-	ch, err := s.client.GetQRChannel(qrCtx)
+	ch, err := client.GetQRChannel(qrCtx)
 	if err != nil {
 		cancel()
 		return fmt.Errorf("open QR channel: %w", err)
@@ -374,7 +437,7 @@ func (s *sidecar) startQR(ctx context.Context) error {
 	s.qrStop = cancel
 	s.mu.Unlock()
 
-	if err := s.client.ConnectContext(ctx); err != nil {
+	if err := client.ConnectContext(ctx); err != nil {
 		cancel()
 		return fmt.Errorf("connect: %w", err)
 	}
@@ -416,12 +479,11 @@ func (s *sidecar) pumpQR(cancel context.CancelFunc, ch <-chan whatsmeow.QRChanne
 }
 
 func (s *sidecar) ownJID() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.device == nil || s.device.ID == nil {
+	device := s.deviceOf()
+	if device == nil || device.ID == nil {
 		return ""
 	}
-	return s.device.ID.String()
+	return device.ID.String()
 }
 
 func (s *sidecar) handleEvent(raw any) {
@@ -435,11 +497,9 @@ func (s *sidecar) handleEvent(raw any) {
 	case *events.LoggedOut:
 		s.setState("logged_out", "", "logged out from phone")
 		// The server ended this companion session, so the stored credentials can
-		// never connect again. Clearing them lets the next login offer a fresh
-		// QR code instead of retrying a dead device forever.
-		if err := s.device.Delete(context.Background()); err != nil {
-			s.emitError(fmt.Errorf("clear logged-out device: %w", err))
-		}
+		// never connect again. Clearing them and rebuilding the client lets the
+		// next login offer a fresh QR code.
+		s.dropDevice()
 
 	case *events.TemporaryBan:
 		s.setState("disconnected", s.ownJID(), "temporary ban: "+evt.String())

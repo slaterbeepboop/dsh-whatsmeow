@@ -124,6 +124,14 @@ state = await callHandler('/dsh-whatsmeow/state')
 assert.deepEqual(state.body.chats, [], 'logout forgets bridged chats')
 assert.equal(state.body.qr, null)
 
+// A restart replaces the bridge process and clears the previous failure.
+const restart = await callHandler('/dsh-whatsmeow/action', { method: 'POST', body: JSON.stringify({ action: 'restart' }) })
+assert.equal(restart.status, 200)
+await sleep(400)
+state = await callHandler('/dsh-whatsmeow/state')
+assert.equal(state.body.process, 'running', 'restart brought the bridge back')
+assert.equal(state.body.error, null, 'restart cleared the stale error')
+
 for (const dispose of disposers) dispose()
 console.log('host plugin checks passed')
 

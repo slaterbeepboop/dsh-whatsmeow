@@ -22,8 +22,8 @@ export const name = 'dsh-whatsmeow'
 const STATE_PATH = '/dsh-whatsmeow/state'
 const ACTION_PATH = '/dsh-whatsmeow/action'
 
-/** A pairing code lives ~20s; a stale PNG must never be offered for scanning. */
-const QR_TTL_MS = 60_000
+/** Slack on the sidecar's own rotation window, so a code is never offered past its life. */
+const QR_GRACE_MS = 2_000
 
 /** Body ceiling for the action route; its payload is one short word. */
 const MAX_BODY_BYTES = 8 * 1024
@@ -136,7 +136,14 @@ export function apply(ctx, config = {}) {
         break
 
       case 'qr':
-        state.qr = { png: event.png, code: event.code, timeout: event.timeout, at: Date.now() }
+        // The sidecar reports how long this code stays valid; trust that window
+        // rather than a flat guess, or the phone scans a discarded pairing.
+        state.qr = {
+          png: event.png,
+          code: event.code,
+          timeout: event.timeout,
+          expiresAt: Date.now() + Math.max(0, (event.timeout ?? 20) * 1000 - QR_GRACE_MS),
+        }
         state.error = null
         break
 
@@ -167,8 +174,7 @@ export function apply(ctx, config = {}) {
     if (!state.chats.includes(chat)) state.chats.push(chat)
 
     try {
-      const agent = ctx.agents.get(sessionId) ?? await createSession(sessionId)
-      if (!agent) return
+      const agent = await ensureSession(sessionId)
       agent.followup(Object.freeze({
         id: randomUUID(),
         role: 'user',
@@ -180,16 +186,22 @@ export function apply(ctx, config = {}) {
     }
   }
 
-  /** Create the DSH Session backing one chat, or return the existing agent. */
-  async function createSession(sessionId) {
+  /** Return the live agent for one chat, creating or resuming its Session as needed. */
+  async function ensureSession(sessionId) {
+    const live = ctx.agents.get(sessionId)
+    if (live) return live
     try {
       const handle = await ctx.agents.create({ sessionId, meta: { cwd: workspace } })
       return handle.agent
     } catch (error) {
-      // A session persisted by an earlier run is resumed rather than recreated.
-      const existing = ctx.agents.get(sessionId)
-      if (existing) return existing
-      throw error
+      // A Session persisted by an earlier run already owns this id, so resume it.
+      // Without this a restart would silently mute every existing chat.
+      try {
+        const resumed = await ctx.agents.resume({ resumeSessionId: sessionId })
+        return resumed.agent
+      } catch {
+        throw error
+      }
     }
   }
 
@@ -320,7 +332,7 @@ export function apply(ctx, config = {}) {
         pushName: state.pushName,
         // A code past its rotation window is worse than no code: the phone
         // would scan a pairing attempt the server already discarded.
-        qr: state.qr && Date.now() - state.qr.at < QR_TTL_MS ? state.qr.png : null,
+        qr: state.qr && Date.now() < state.qr.expiresAt ? state.qr.png : null,
         error: state.error,
         chats: state.chats,
       })

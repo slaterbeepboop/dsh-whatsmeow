@@ -66,10 +66,14 @@ type event struct {
 	Reason   string `json:"reason,omitempty"`
 
 	// message
-	ID        string `json:"id,omitempty"`
-	Chat      string `json:"chat,omitempty"`
-	ChatName  string `json:"chatName,omitempty"`
-	Sender    string `json:"sender,omitempty"`
+	ID       string `json:"id,omitempty"`
+	Chat     string `json:"chat,omitempty"`
+	ChatName string `json:"chatName,omitempty"`
+	Sender   string `json:"sender,omitempty"`
+	// SenderPN is the sender's phone-number JID when WhatsApp addressed the
+	// message by LID; an allowlist of numbers needs this, not the opaque LID.
+	SenderPN  string `json:"senderPN,omitempty"`
+	ChatPN    string `json:"chatPN,omitempty"`
 	Text      string `json:"text,omitempty"`
 	Kind      string `json:"kind,omitempty"`
 	Timestamp int64  `json:"timestamp,omitempty"`
@@ -533,12 +537,32 @@ func (s *sidecar) forwardMessage(evt *events.Message) {
 		Chat:      info.Chat.String(),
 		ChatName:  name,
 		Sender:    info.Sender.String(),
+		SenderPN:  s.phoneJID(info.Sender),
+		ChatPN:    s.phoneJID(info.Chat),
 		Text:      text,
 		Kind:      kind,
 		Timestamp: info.Timestamp.Unix(),
 		FromMe:    info.IsFromMe,
 		IsGroup:   info.IsGroup,
 	})
+}
+
+// phoneJID returns the phone-number form of a JID. A LID is mapped back
+// through the stored LID/PN table; anything else already is a phone JID, and
+// an unmapped LID falls back to itself so the caller always gets an identity.
+func (s *sidecar) phoneJID(jid types.JID) string {
+	if jid.Server != types.HiddenUserServer {
+		return jid.String()
+	}
+	client := s.cli()
+	if client == nil {
+		return jid.String()
+	}
+	pn, err := client.Store.LIDs.GetPNForLID(context.Background(), jid)
+	if err != nil || pn.IsEmpty() {
+		return jid.String()
+	}
+	return pn.String()
 }
 
 // describeMessage returns the message kind and its user-visible text. An

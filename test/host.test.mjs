@@ -94,17 +94,38 @@ assert.equal(
 const login = await callHandler('/dsh-whatsmeow/action', { method: 'POST', body: JSON.stringify({ action: 'login' }) })
 assert.equal(login.status, 200)
 assert.equal(login.body.ok, true)
-await sleep(120)
+// Long enough for every scripted inbound message, the stranger included.
+await sleep(300)
 state = await callHandler('/dsh-whatsmeow/state')
 assert.equal(state.body.state, 'qr')
 assert.match(state.body.qr, /^data:image\/png;base64,/, 'pairing code reached the browser')
 
 // Inbound text created one Session and reached its agent; echo and group stayed out.
-assert.deepEqual(created, ['whatsapp-628222-s.whatsapp.net'], 'one Session per chat')
-assert.equal(followed.length, 1, 'only the non-echo, non-group message was delivered')
+assert.deepEqual(
+  created,
+  ['whatsapp-628222-s.whatsapp.net', 'whatsapp-628999-lid'],
+  'one Session per chat, the LID stranger included while the allowlist is open',
+)
+assert.equal(followed.length, 2, 'echo and group stayed out; both real senders got through')
 assert.equal(followed[0].message.content[0].text, 'halo dari wa')
 assert.equal(followed[0].message.source.kind, 'user', 'inbound is a user-role prompt')
 assert.equal(followed[0].message.role, 'user')
+
+// Lock the allowlist to one number and confirm the other sender is dropped.
+let allow = await callHandler('/dsh-whatsmeow/action', {
+  method: 'POST',
+  body: JSON.stringify({ action: 'allow', allow: { mode: 'list', numbers: ['628222'] } }),
+})
+assert.equal(allow.status, 200)
+assert.deepEqual(allow.body.allow, { mode: 'list', numbers: ['628222'] }, 'the list is stored as digits')
+state = await callHandler('/dsh-whatsmeow/state')
+assert.deepEqual(state.body.allow, { mode: 'list', numbers: ['628222'] }, 'the panel sees the saved list')
+
+// A malformed allowlist write is refused rather than silently resetting access.
+assert.equal(
+  (await callHandler('/dsh-whatsmeow/action', { method: 'POST', body: JSON.stringify({ action: 'allow', allow: {} }) })).status,
+  400,
+)
 
 // The assistant text of the turn goes back to the chat that started it.
 const relay = listeners.get('session/event')
@@ -114,7 +135,11 @@ relay(session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'stop' } } }
 await sleep(200)
 assert.deepEqual(readSends(), [{ to: '628222@s.whatsapp.net', text: 'halo juga' }], 'reply reached WhatsApp')
 state = await callHandler('/dsh-whatsmeow/state')
-assert.deepEqual(state.body.chats, ['628222@s.whatsapp.net'], 'bridged chats are listed')
+assert.deepEqual(
+  state.body.chats,
+  ['628222@s.whatsapp.net', '628999@lid'],
+  'both chats bridged before the allowlist was locked are listed',
+)
 
 // Logout clears the bridge.
 const logout = await callHandler('/dsh-whatsmeow/action', { method: 'POST', body: JSON.stringify({ action: 'logout' }) })

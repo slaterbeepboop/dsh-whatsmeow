@@ -46,6 +46,19 @@ The plugin row accepts these optional fields:
 | `selfOnly` | `true` | Ignore group chats |
 | `sidecarPath` | bundled `bin/whatsmeow-sidecar` | Use a binary elsewhere |
 
+## Who can reach the agent
+
+The **Settings → WhatsApp** panel has an allowlist with two modes:
+
+| Mode | Behaviour |
+|---|---|
+| Anyone | Every sender that passes `selfOnly` reaches a Session |
+| Only these numbers | Only the listed numbers do; everything else is ignored and counted in the panel |
+
+The list is stored in `allow.json` beside the session database, owner-only, and survives a restart. Numbers are reduced to digits, so `+62 812-3456-789` and `628123456789` are the same entry. WhatsApp sometimes addresses a message by LID rather than phone number; the sidecar maps that back through the stored LID table, so a phone number you add still matches.
+
+An empty list in **Only these numbers** mode blocks everyone. That is deliberate: a list you have not filled in yet should lock the agent, not open it.
+
 ## Routes
 
 The Host half registers two same-origin routes, both behind DSH's own connection admission:

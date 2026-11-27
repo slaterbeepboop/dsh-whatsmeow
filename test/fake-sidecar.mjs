@@ -40,6 +40,12 @@ createInterface({ input: process.stdin }).on('line', (line) => {
       sender: '628111@s.whatsapp.net', text: 'echo', kind: 'text',
       timestamp: 3, fromMe: true, isGroup: false,
     }), 100)
+    // A stranger, so the allowlist has something to decide about.
+    setTimeout(() => out({
+      event: 'message', id: 'm4', chat: '628999@lid', chatName: '628999',
+      sender: '628999@lid', senderPN: '628999@s.whatsapp.net', text: 'halo stranger',
+      kind: 'text', timestamp: 4, fromMe: false, isGroup: false,
+    }), 120)
     return
   }
 

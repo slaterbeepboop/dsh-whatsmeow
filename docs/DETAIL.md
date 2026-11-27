@@ -18,6 +18,12 @@ The first message you receive from a chat creates a DSH Session named `whatsapp-
 
 Typing in that Session from the DSH GUI sends your reply to WhatsApp too, so the conversation is bidirectional.
 
+## Who can reach the agent
+
+Under the link controls there is an allowlist. **Anyone** lets every sender through; **Only these numbers** restricts the agent to the numbers you add. The panel lists them and shows the senders it recently ignored, so a locked agent looks intentional rather than broken.
+
+Numbers are matched by digits, and WhatsApp's LID addressing is mapped back to the phone number, so what you type is what gets matched. The list is saved next to the session database and survives a restart. An empty list blocks everyone on purpose.
+
 ## Limits
 
 - Group chats are ignored by default. Set `selfOnly: false` on the plugin row to bridge them.

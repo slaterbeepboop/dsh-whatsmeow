@@ -4,3 +4,5 @@ node_modules/
 test/.sent.jsonl
 test/.state/
 test/.state-resume/
+test/.state-allow/
+test/allow.json

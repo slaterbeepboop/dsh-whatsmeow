@@ -48,12 +48,14 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
 apply(ctx, { stateDir: STATE, sidecarPath: FAKE, workspace: '/tmp' })
 await sleep(100)
 await call('/dsh-whatsmeow/action', { method: 'POST', body: JSON.stringify({ action: 'login' }) })
-await sleep(200)
+await sleep(400)
 
 assert.deepEqual(events, [
   ['resume', 'whatsapp-628222-s.whatsapp.net'],
   ['followup', 'halo dari wa'],
-], 'a persisted chat resumes and still receives the message')
+  ['resume', 'whatsapp-628999-lid'],
+  ['followup', 'halo stranger'],
+], 'every persisted chat resumes and still receives its message')
 
 console.log('resume path checks passed')
 

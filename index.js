@@ -10,11 +10,28 @@
 import { spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 export const inject = ['webServer', 'connection', 'agents']
+
+/**
+ * The route a fresh Session should run on. Without one the agent throws
+ * "has no provider/model" on its first step, so plugin-created Sessions must
+ * carry it just as the headless entry point does.
+ * @param ctx - the Host plugin context.
+ * @returns provider, model, and optional reasoning effort, or undefined.
+ */
+function defaultRoute(ctx) {
+  // A context without `get` (tests, or a stripped composition) simply has no
+  // default-model service; the agent then reports its own missing route.
+  if (typeof ctx.get !== 'function') return undefined
+  const defaults = ctx.get('agentDefaultModel')
+  if (defaults === undefined || defaults === null) return undefined
+  const selection = defaults.currentSelection()
+  return selection === undefined ? undefined : { ...selection }
+}
 
 export const name = 'dsh-whatsmeow'
 
@@ -24,6 +41,23 @@ const ACTION_PATH = '/dsh-whatsmeow/action'
 
 /** Slack on the sidecar's own rotation window, so a code is never offered past its life. */
 const QR_GRACE_MS = 2_000
+
+/** Where the allowlist lives beside the WhatsApp session database. */
+const ALLOW_FILE = 'allow.json'
+
+/** Default allowlist: every sender reaches the agent. */
+const ALLOW_DEFAULTS = { mode: 'all', numbers: [] }
+
+/**
+ * Reduce a WhatsApp JID to bare digits so an entry a person typed matches
+ * whichever addressing form the message arrived in.
+ * @param jid - a JID such as `628123:4@s.whatsapp.net` or `628123@lid`.
+ * @returns its digits, or an empty string.
+ */
+function digitsOf(jid) {
+  if (typeof jid !== 'string') return ''
+  return jid.split('@')[0].split(':')[0].replace(/\D/g, '')
+}
 
 /** Body ceiling for the action route; its payload is one short word. */
 const MAX_BODY_BYTES = 8 * 1024
@@ -89,6 +123,44 @@ export function apply(ctx, config = {}) {
     qr: null,
     error: null,
     chats: [],
+    allow: { ...ALLOW_DEFAULTS },
+    /** Messages the allowlist dropped, newest last; the panel reports the count. */
+    blocked: [],
+  }
+
+  const allowFile = join(stateDir, ALLOW_FILE)
+
+  /** Read the allowlist, falling back to allow-everyone when the file is absent or unusable. */
+  async function loadAllow() {
+    try {
+      const parsed = JSON.parse(await readFile(allowFile, 'utf8'))
+      const numbers = Array.isArray(parsed.numbers)
+        ? parsed.numbers.map((entry) => digitsOf(String(entry))).filter(Boolean)
+        : []
+      state.allow = { mode: parsed.mode === 'list' ? 'list' : 'all', numbers }
+    } catch {
+      state.allow = { ...ALLOW_DEFAULTS }
+    }
+  }
+
+  /** Persist the allowlist so it survives a restart. */
+  async function saveAllow(next) {
+    const numbers = [...new Set(next.numbers.map((entry) => digitsOf(String(entry))).filter(Boolean))]
+    state.allow = { mode: next.mode === 'list' ? 'list' : 'all', numbers }
+    await writeFile(allowFile, `${JSON.stringify(state.allow, null, 2)}\n`, { mode: 0o600 })
+    return state.allow
+  }
+
+  /**
+   * Whether a sender may reach the agent. An empty list in `list` mode blocks
+   * everyone: that is a deliberate lock, not a fallback to open access.
+   * @param event - the inbound sidecar message event.
+   * @returns true when the message may be delivered.
+   */
+  function allowed(event) {
+    if (state.allow.mode !== 'list') return true
+    const candidates = [digitsOf(event.senderPN), digitsOf(event.sender), digitsOf(event.chatPN), digitsOf(event.chat)]
+    return candidates.some((digits) => digits !== '' && state.allow.numbers.includes(digits))
   }
 
   /** chat JID → DSH session id, and the reverse, for the live process. */
@@ -165,6 +237,16 @@ export function apply(ctx, config = {}) {
     // Echoes of our own sends would otherwise loop straight back in.
     if (event.fromMe) return
     if (selfOnly && event.isGroup) return
+    if (!allowed(event)) {
+      // Recorded so the panel can show that the allowlist, not a fault, is
+      // what kept this sender out.
+      state.blocked.push({
+        sender: event.senderPN || event.sender,
+        at: Date.now(),
+      })
+      if (state.blocked.length > 20) state.blocked.shift()
+      return
+    }
 
     const chat = event.chat
     const text = event.text?.trim() ? event.text : `[${event.kind} message]`
@@ -190,8 +272,13 @@ export function apply(ctx, config = {}) {
   async function ensureSession(sessionId) {
     const live = ctx.agents.get(sessionId)
     if (live) return live
+    const agentOptions = defaultRoute(ctx)
     try {
-      const handle = await ctx.agents.create({ sessionId, meta: { cwd: workspace } })
+      const handle = await ctx.agents.create({
+        sessionId,
+        meta: { cwd: workspace },
+        ...(agentOptions === undefined ? {} : { agentOptions }),
+      })
       return handle.agent
     } catch (error) {
       // A Session persisted by an earlier run already owns this id, so resume it.
@@ -304,6 +391,7 @@ export function apply(ctx, config = {}) {
   }
 
   ctx.effect(() => {
+    void loadAllow()
     void start()
     return () => { stop() }
   }, 'dsh-whatsmeow: sidecar process')
@@ -351,6 +439,8 @@ export function apply(ctx, config = {}) {
         qr: state.qr && Date.now() < state.qr.expiresAt ? state.qr.png : null,
         error: state.error,
         chats: state.chats,
+        allow: state.allow,
+        blocked: state.blocked.slice(-5),
       })
     },
   }), `dsh-whatsmeow: GET ${STATE_PATH}`)
@@ -378,8 +468,28 @@ export function apply(ctx, config = {}) {
         sendJson(res, 400, { ok: false, error: 'body must be JSON' })
         return
       }
+      if (action === 'allow') {
+        let next
+        try {
+          next = JSON.parse(body).allow
+        } catch {
+          sendJson(res, 400, { ok: false, error: 'allow payload must be JSON' })
+          return
+        }
+        if (next === null || typeof next !== 'object' || !Array.isArray(next.numbers)) {
+          sendJson(res, 400, { ok: false, error: 'allow needs mode and a numbers array' })
+          return
+        }
+        try {
+          const saved = await saveAllow(next)
+          sendJson(res, 200, { ok: true, allow: saved })
+        } catch (error) {
+          sendJson(res, 500, { ok: false, error: error instanceof Error ? error.message : String(error) })
+        }
+        return
+      }
       if (action !== 'login' && action !== 'logout' && action !== 'restart') {
-        sendJson(res, 400, { ok: false, error: 'action must be login, logout or restart' })
+        sendJson(res, 400, { ok: false, error: 'action must be login, logout, restart or allow' })
         return
       }
       try {

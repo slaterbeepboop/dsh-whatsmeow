@@ -273,18 +273,29 @@ export function apply(ctx, config = {}) {
     const live = ctx.agents.get(sessionId)
     if (live) return live
     const agentOptions = defaultRoute(ctx)
+    // A persisted Session records no route, so resuming it needs the same
+    // default the create path passes; without it the first step throws
+    // "has no provider/model" and the chat stays mute forever.
+    const route = agentOptions === undefined ? {} : {
+      agentOptions,
+      setup: (agentCtx, agent) => {
+        // A model chosen for this Session in the GUI is a recorded selection
+        // and must win; only an unset route is filled in here.
+        if (agent.model.current() === undefined) agent.model.select({ ...agentOptions })
+      },
+    }
     try {
       const handle = await ctx.agents.create({
         sessionId,
         meta: { cwd: workspace },
-        ...(agentOptions === undefined ? {} : { agentOptions }),
+        ...route,
       })
       return handle.agent
     } catch (error) {
       // A Session persisted by an earlier run already owns this id, so resume it.
       // Without this a restart would silently mute every existing chat.
       try {
-        const resumed = await ctx.agents.resume({ resumeSessionId: sessionId })
+        const resumed = await ctx.agents.resume({ resumeSessionId: sessionId, ...route })
         return resumed.agent
       } catch {
         throw error

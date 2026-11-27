@@ -38,6 +38,6 @@
     "node": ">=22"
   },
   "scripts": {
-    "test": "node test/host.test.mjs && node test/resume.test.mjs && node test/allow.test.mjs"
+    "test": "node test/host.test.mjs && node test/resume.test.mjs && node test/allow.test.mjs && node test/model-route.test.mjs"
   }
 }

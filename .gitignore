@@ -6,3 +6,4 @@ test/.state/
 test/.state-resume/
 test/.state-allow/
 test/allow.json
+test/.state-model*/

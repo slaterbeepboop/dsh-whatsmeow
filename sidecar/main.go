@@ -232,6 +232,11 @@ func (s *sidecar) emitError(err error) {
 // so a restart during a network blip heals itself instead of stranding the
 // account on "disconnected" until the next restart.
 func (s *sidecar) connectExisting(ctx context.Context) {
+	// Startup already connected, and a repeated login must not dial a second
+	// socket: whatsmeow rejects that with ErrAlreadyConnected.
+	if s.client.IsConnected() {
+		return
+	}
 	s.mu.Lock()
 	s.client.InitialAutoReconnect = true
 	s.mu.Unlock()
@@ -348,6 +353,11 @@ func (s *sidecar) handle(ctx context.Context, req request) {
 
 // startQR opens a pairing channel and streams a fresh code per rotation. The
 // PNG is rendered here so the browser needs no QR library of its own.
+//
+// The connection itself must be built on the long-lived process context: the
+// frame socket keeps the context it was dialled with, so cancelling the QR
+// channel's own context would tear the socket down the instant pairing
+// succeeds, and the phone would report that the login failed.
 func (s *sidecar) startQR(ctx context.Context) error {
 	if s.client.IsConnected() {
 		s.client.Disconnect()
@@ -364,15 +374,17 @@ func (s *sidecar) startQR(ctx context.Context) error {
 	s.qrStop = cancel
 	s.mu.Unlock()
 
-	if err := s.client.ConnectContext(qrCtx); err != nil {
+	if err := s.client.ConnectContext(ctx); err != nil {
 		cancel()
 		return fmt.Errorf("connect: %w", err)
 	}
-	go s.pumpQR(qrCtx, cancel, ch)
+	go s.pumpQR(cancel, ch)
 	return nil
 }
 
-func (s *sidecar) pumpQR(ctx context.Context, cancel context.CancelFunc, ch <-chan whatsmeow.QRChannelItem) {
+func (s *sidecar) pumpQR(cancel context.CancelFunc, ch <-chan whatsmeow.QRChannelItem) {
+	// Stops only the QR emitter; the connection keeps running on the process
+	// context, so a successful pairing survives this cancellation.
 	defer cancel()
 	for item := range ch {
 		switch item.Event {
@@ -422,6 +434,12 @@ func (s *sidecar) handleEvent(raw any) {
 
 	case *events.LoggedOut:
 		s.setState("logged_out", "", "logged out from phone")
+		// The server ended this companion session, so the stored credentials can
+		// never connect again. Clearing them lets the next login offer a fresh
+		// QR code instead of retrying a dead device forever.
+		if err := s.device.Delete(context.Background()); err != nil {
+			s.emitError(fmt.Errorf("clear logged-out device: %w", err))
+		}
 
 	case *events.TemporaryBan:
 		s.setState("disconnected", s.ownJID(), "temporary ban: "+evt.String())

@@ -10,7 +10,7 @@ window.__ModuleLoader__.load({
     /** The pairing code rotates on the sidecar's own schedule; polling faster adds nothing. */
     const POLL_MS = 2000
 
-    const label = {
+    const stateLabel = {
       connected: 'Connected',
       qr: 'Scan to link',
       connecting: 'Connecting',
@@ -22,13 +22,13 @@ window.__ModuleLoader__.load({
     }
 
     const styles = {
-      root: { display: 'flex', flexDirection: 'column', gap: 16, padding: '8px 0', maxWidth: 520 },
+      root: { display: 'flex', flexDirection: 'column', gap: 16, paddingTop: 4, maxWidth: 460 },
       row: { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' },
       dot: (color) => ({ width: 8, height: 8, borderRadius: 4, background: color, flex: 'none' }),
       muted: { opacity: 0.7, fontSize: 13, lineHeight: 1.5, margin: 0 },
       code: { fontFamily: 'ui-monospace, SFMono-Regular, Menlo, monospace', fontSize: 13 },
       qrBox: { background: '#fff', padding: 12, borderRadius: 8, width: 'fit-content' },
-      qr: { display: 'block', width: 260, height: 260 },
+      qr: { display: 'block', width: 240, height: 240 },
       button: {
         font: 'inherit', fontSize: 13, padding: '6px 14px', borderRadius: 6,
         border: '1px solid currentColor', background: 'transparent',
@@ -44,7 +44,17 @@ window.__ModuleLoader__.load({
       return '#8a8a8a'
     }
 
-    function Panel() {
+    /** Nav glyph beside the section label; the shell falls back to a gear without it. */
+    function WhatsAppIcon({ size = 16 }) {
+      return h('svg', {
+        viewBox: '0 0 24 24', width: size, height: size, fill: 'currentColor',
+        'aria-hidden': true, style: { display: 'block' },
+      }, h('path', {
+        d: 'M12 2a10 10 0 0 0-8.5 15.3L2 22l4.9-1.4A10 10 0 1 0 12 2zm0 2a8 8 0 1 1-4.2 14.8l-.4-.2-2.6.7.7-2.5-.2-.4A8 8 0 0 1 12 4zm-3 4.2c-.3 0-.7.1-1 .4-.4.4-.9 1-.9 2 0 1.1.8 2.2 1 2.4.1.2 1.6 2.6 4 3.5 2 .8 2.4.7 2.9.6.5-.1 1.5-.6 1.7-1.2.2-.6.2-1.1.1-1.2 0-.1-.2-.2-.4-.3l-1.4-.7c-.2-.1-.4-.1-.5.1l-.7.9c-.1.2-.3.2-.5.1-.2-.1-.9-.4-1.8-1.2-.6-.6-1.1-1.3-1.2-1.5-.1-.2 0-.3.1-.4l.4-.5c.1-.2.2-.3.2-.4 0-.2 0-.3-.1-.4l-.6-1.5c-.2-.4-.3-.4-.5-.4z',
+      }))
+    }
+
+    function WhatsAppSection() {
       const [snapshot, setSnapshot] = useState(null)
       const [busy, setBusy] = useState(false)
       const [actionError, setActionError] = useState(null)
@@ -89,8 +99,7 @@ window.__ModuleLoader__.load({
       }, [])
 
       if (!snapshot) {
-        return h('div', { style: styles.root },
-          h('p', { style: styles.muted }, 'Loading bridge state…'))
+        return h('div', { style: styles.root }, h('p', { style: styles.muted }, 'Loading bridge state…'))
       }
 
       const state = snapshot.state
@@ -98,7 +107,7 @@ window.__ModuleLoader__.load({
       return h('div', { style: styles.root },
         h('div', { style: styles.row },
           h('span', { style: styles.dot(dotColor(state)) }),
-          h('strong', null, label[state] ?? state),
+          h('strong', null, stateLabel[state] ?? state),
           snapshot.pushName ? h('span', { style: styles.muted }, `· ${snapshot.pushName}`) : null),
         snapshot.jid
           ? h('p', { style: styles.muted }, 'Linked number: ', h('span', { style: styles.code }, snapshot.jid.split('@')[0]))
@@ -140,12 +149,18 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots'],
       apply(ctx) {
-        ctx.slots.inject('plugins.tab', () => ctx.slots.register({
-          name: 'plugins.tab',
-          id: 'dsh-whatsmeow',
-          order: 50,
+        // A settings section, beside Wallpaper Engine and the official pages,
+        // rather than a tab on the Plugins page.
+        ctx.slots.inject('settings.section', () => ctx.slots.register({
+          name: 'settings.section',
+          id: 'whatsapp',
+          order: 60,
           label: () => 'WhatsApp',
-        }, Panel))
+        }, WhatsAppSection))
+        ctx.slots.inject('settings.section.icon', () => ctx.slots.register({
+          name: 'settings.section.icon',
+          id: 'whatsapp',
+        }, WhatsAppIcon))
       },
     }
   },

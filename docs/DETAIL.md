@@ -4,7 +4,7 @@ Links a WhatsApp account to DSH through a native [whatsmeow](https://github.com/
 
 ## Linking a device
 
-Open **Settings → Plugins → WhatsApp** and press **Link a device**. A pairing code appears; scan it from your phone under WhatsApp → Linked devices → Link a device. The code rotates every 20 seconds and the panel follows it. Once the phone confirms, the panel shows the linked number and the code disappears.
+Open **Settings → WhatsApp** (in the settings sidebar, beside Wallpaper Engine) and press **Link a device**. A pairing code appears; scan it from your phone under WhatsApp → Linked devices → Link a device. The code rotates every 20 seconds and the panel follows it. Once the phone confirms, the panel shows the linked number and the code disappears.
 
 **Unlink** ends the session on the server and deletes the stored credentials, so the next pairing starts clean.
 
@@ -22,6 +22,6 @@ Typing in that Session from the DSH GUI sends your reply to WhatsApp too, so the
 
 - Group chats are ignored by default. Set `selfOnly: false` on the plugin row to bridge them.
 - Only text is bridged outbound. Inbound images, video, audio, stickers, and documents arrive as a `[kind message]` placeholder with the caption when the message has one; media is not downloaded.
-- The QR panel lives on the Plugins page, not in a chat, because the pairing code has to update while it is on screen.
+- The pairing panel is a settings section, not a chat, because the code has to keep updating while it is on screen.
 - The sidecar is built for Linux x86-64. Other platforms need `sidecar/build.sh` with Go 1.26 or newer.
 - This uses an unofficial WhatsApp client. WhatsApp's terms do not permit it, and an account used this way can be banned. A dedicated number is the only sensible mitigation.

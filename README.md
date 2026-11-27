@@ -21,7 +21,7 @@ Two processes, one contract: one JSON object per line, requests carry an `id`, e
 git clone https://github.com/slaterbeepboop/dsh-whatsmeow.git
 ```
 
-Then in DSH: **Plugins → Add plugin →** the cloned directory. Open **Settings → Plugins → WhatsApp** and press **Link a device**.
+Then in DSH: **Plugins → Add plugin →** the cloned directory. Open **Settings → WhatsApp** and press **Link a device**.
 
 The repository ships a prebuilt Linux x86-64 binary at `bin/whatsmeow-sidecar`. To rebuild it for another platform, install Go 1.26 or newer and run:
 

@@ -29,6 +29,12 @@ The repository ships a prebuilt Linux x86-64 binary at `bin/whatsmeow-sidecar`. 
 sidecar/build.sh
 ```
 
+## The pairing persists
+
+Scanning the code once is enough. The paired device is written to `store.db` in the state directory, and the sidecar reconnects with it on every start, so restarting DSH never asks for a new code. A transient network failure at startup is retried in the background instead of leaving the account stuck.
+
+The database holds the device's private keys, so it is created owner-only (`0600`) inside a `0700` directory. **Unlink** is the only way to remove it, and it deletes the credentials on purpose.
+
 ## Configuration
 
 The plugin row accepts these optional fields:

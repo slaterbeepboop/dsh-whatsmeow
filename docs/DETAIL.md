@@ -8,6 +8,10 @@ Open **Settings → Plugins → WhatsApp** and press **Link a device**. A pairin
 
 **Unlink** ends the session on the server and deletes the stored credentials, so the next pairing starts clean.
 
+## The pairing persists
+
+Scanning once is enough. The device is stored in `store.db` under the state directory and reused on every start, so a DSH restart reconnects without a new code. If the first connect fails because the network is down, it retries in the background rather than sitting on `disconnected`.
+
 ## How a chat becomes a Session
 
 The first message you receive from a chat creates a DSH Session named `whatsapp-<jid>`, which appears in the sidebar like any other. The message arrives as a user-role prompt, so the agent answers it with its normal tools and permissions. When the turn ends, the assistant text is sent back to that chat.

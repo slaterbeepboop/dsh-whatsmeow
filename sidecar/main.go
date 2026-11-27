@@ -106,6 +106,11 @@ type sidecar struct {
 }
 
 func main() {
+	// The database holds the paired device's private keys, and SQLite creates
+	// the -wal and -shm files itself. Close the process umask so every one of
+	// them lands owner-only instead of the default 0644.
+	syscall.Umask(0o077)
+
 	level := zerolog.WarnLevel
 	switch os.Getenv("DSH_WHATSBMEOW_LOG") {
 	case "debug":
@@ -142,11 +147,7 @@ func main() {
 	// A stored device means a previous pairing survived, so reconnect without
 	// asking for a QR code again.
 	if s.device.ID != nil {
-		s.setState("connecting", "", "")
-		if err := s.client.ConnectContext(ctx); err != nil {
-			s.emitError(fmt.Errorf("reconnect: %w", err))
-			s.setState("disconnected", "", err.Error())
-		}
+		s.connectExisting(ctx)
 	} else {
 		s.setState("logged_out", "", "")
 	}
@@ -226,6 +227,21 @@ func (s *sidecar) emitError(err error) {
 	s.out.send(event{Event: "error", Message: err.Error()})
 }
 
+// connectExisting reconnects an already-paired device. whatsmeow retries a
+// retryable failure in the background only while InitialAutoReconnect is set,
+// so a restart during a network blip heals itself instead of stranding the
+// account on "disconnected" until the next restart.
+func (s *sidecar) connectExisting(ctx context.Context) {
+	s.mu.Lock()
+	s.client.InitialAutoReconnect = true
+	s.mu.Unlock()
+	s.setState("connecting", "", "")
+	if err := s.client.ConnectContext(ctx); err != nil {
+		s.emitError(fmt.Errorf("reconnect: %w", err))
+		s.setState("disconnected", s.ownJID(), err.Error())
+	}
+}
+
 func (s *sidecar) stopQR() {
 	s.mu.Lock()
 	stop := s.qrStop
@@ -270,6 +286,13 @@ func (s *sidecar) handle(ctx context.Context, req request) {
 	case "login":
 		if s.client.IsLoggedIn() {
 			s.out.send(response{ID: req.ID, OK: true, Data: map[string]any{"state": "connected"}})
+			return
+		}
+		// A paired device already holds the credentials, so asking for a QR code
+		// again would be wrong: reconnect and let the status events report it.
+		if s.device.ID != nil {
+			go s.connectExisting(ctx)
+			s.out.send(response{ID: req.ID, OK: true, Data: map[string]any{"state": "connecting"}})
 			return
 		}
 		if err := s.startQR(ctx); err != nil {
@@ -463,7 +486,7 @@ func describeMessage(m *waE2E.Message) (kind, text string) {
 		return "sticker", ""
 	case m.GetLocationMessage() != nil:
 		loc := m.GetLocationMessage()
-		return "location", fmt.Sprintf("%s,%s", loc.GetDegreesLatitude(), loc.GetDegreesLongitude())
+		return "location", fmt.Sprintf("%f,%f", loc.GetDegreesLatitude(), loc.GetDegreesLongitude())
 	case m.GetReactionMessage() != nil:
 		return "reaction", m.GetReactionMessage().GetText()
 	case m.GetProtocolMessage() != nil:

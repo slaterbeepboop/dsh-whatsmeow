@@ -18,16 +18,26 @@
     "docs",
     "icon.svg",
     "bin",
-    "sidecar"
+    "sidecar",
+    "test"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-plugin-manager"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-plugin-manager"
+      ]
     }
   },
   "license": "MIT",
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node test/host.test.mjs && node test/resume.test.mjs"
+  }
 }
